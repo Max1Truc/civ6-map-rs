@@ -1,0 +1,9 @@
+[package]
+name = "civ6-rs"
+version = "0.1.0"
+authors = ["Max1Truc <maxitruc.bonbec@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+flate2 = { version = "1.0.17" }
+pretty-hex = "0.2.0"
