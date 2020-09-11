@@ -1,4 +1,5 @@
-use flate2::{Decompress, FlushDecompress};
+use flate2::{Decompress, FlushDecompress, Status};
+use pretty_hex::*;
 use std::{
     cmp::min,
     fs::File,
@@ -66,7 +67,6 @@ fn extract_zlib_buffer_from_civ6_save(buffer: &Vec<u8>, output_buffer: &mut Vec<
     let (zlib_start_index, zlib_stop_index) = find_zlib_buffer_indexes(&buffer);
 
     let zlib_buffer = Vec::from(&buffer[(zlib_start_index + 4)..(zlib_stop_index + 4)]);
-    
     output_buffer.clear();
 
     for x in 0..(zlib_buffer.len() / 65540 + 1) {
@@ -88,17 +88,25 @@ fn main() {
     extract_zlib_buffer_from_civ6_save(&data, &mut compressed_data);
 
     let mut decompressor = Decompress::new(true);
-    let mut decompressed_data: Vec<u8> = Vec::new();
-    let result =
-        decompressor.decompress(&compressed_data, &mut decompressed_data, FlushDecompress::Sync);
+    let mut decompressed_data: Vec<u8> = Vec::with_capacity((1024 as usize).pow(3));
+    while let Ok(status) = decompressor.decompress_vec(
+        compressed_data.as_slice(),
+        &mut decompressed_data,
+        FlushDecompress::Sync,
+    ) {
+        match status {
+            Status::StreamEnd | Status::BufError => break,
+            _ => {}
+        }
+    }
 
-    if result.is_ok() {
+    if decompressed_data.len() > 0 {
         println!("Decompression succeeded!");
         println!("Writing result to a file...");
 
         let mut data_out_file = File::create("dev_solo.bin").unwrap();
         data_out_file.write_all(&decompressed_data).unwrap();
     } else {
-        panic!("Decompression error:\n{:?}", result.unwrap_err());
+        panic!("Bad decompression! (Decompressed data is empty)");
     }
 }
