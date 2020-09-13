@@ -1,5 +1,5 @@
 [package]
-name = "civ6-rs"
+name = "civ6-map-rs"
 version = "0.1.0"
 authors = ["Max1Truc <maxitruc.bonbec@gmail.com>"]
 edition = "2018"
