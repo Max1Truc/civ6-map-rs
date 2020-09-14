@@ -88,23 +88,43 @@ fn main() {
     extract_zlib_buffer_from_civ6_save(&data, &mut compressed_data);
 
     let mut decompressor = Decompress::new(true);
-    let mut decompressed_data: Vec<u8> = Vec::with_capacity((1024 as usize).pow(3));
-    while let Ok(status) = decompressor.decompress_vec(
-        compressed_data.as_slice(),
-        &mut decompressed_data,
-        FlushDecompress::Sync,
-    ) {
-        match status {
-            Status::StreamEnd | Status::BufError => break,
-            _ => {}
+    let mut decompressed_data: Vec<u8> = Vec::new();
+    let mut temp_decompressed_data: Vec<u8> = Vec::with_capacity((1024 as usize).pow(2)); // 1 mb is read each time
+    loop {
+        if decompressor.total_in() as usize == compressed_data.len() {
+            break;
+        }
+
+        let remaining_data = &compressed_data[(decompressor.total_in() as usize)..];
+        let result = decompressor.decompress_vec(
+            remaining_data,
+            &mut temp_decompressed_data,
+            FlushDecompress::Sync,
+        );
+
+        if result.is_ok() {
+            let status = result.unwrap();
+            match status {
+                Status::Ok => {
+                    decompressed_data.append(&mut temp_decompressed_data);
+                }
+                Status::StreamEnd => {
+                    break;
+                }
+                Status::BufError => panic!("Error with buffer! Corrupted data?"),
+            }
+        } else {
+            panic!("{:?}", result);
         }
     }
+
+    decompressed_data.append(&mut temp_decompressed_data);
 
     if decompressed_data.len() > 0 {
         println!("Decompression succeeded!");
         println!("Writing result to a file...");
 
-        let mut data_out_file = File::create("dev_solo.bin").unwrap();
+        let mut data_out_file = File::create("dev_solo.Civ6Save.bin").unwrap();
         data_out_file.write_all(&decompressed_data).unwrap();
     } else {
         panic!("Bad decompression! (Decompressed data is empty)");
