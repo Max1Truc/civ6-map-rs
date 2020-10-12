@@ -53,7 +53,19 @@ pub fn find_zlib_buffer_indexes(buffer: &Vec<u8>, start_at_index: usize) -> Opti
 }
 
 fn find_map_start_index(data: &Vec<u8>) -> Option<usize> {
-    find_matching_buffer(&data, &START_MAP_BUFFER.to_vec(), 0)
+    let mut header_index = find_matching_buffer(&data, &START_MAP_BUFFER.to_vec(), 0);
+    if header_index.is_none() {
+        return None;
+    }
+    let mut next_header_index =
+        find_matching_buffer(&data, &START_MAP_BUFFER.to_vec(), header_index.unwrap() + 1);
+
+    while next_header_index.is_some() {
+        header_index = next_header_index;
+        next_header_index =
+            find_matching_buffer(&data, &START_MAP_BUFFER.to_vec(), header_index.unwrap() + 1);
+    }
+    header_index
 }
 
 fn extract_zlib_buffer_from_civ6_save(
