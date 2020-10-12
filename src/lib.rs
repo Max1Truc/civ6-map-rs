@@ -1,6 +1,6 @@
-use flate2::{Decompress, FlushDecompress, Status};
+use flate2::{Decompress, FlushDecompress};
 use image::{ImageBuffer, Rgb, RgbImage};
-use std::{cmp::min, convert::TryInto};
+use std::{cmp::min, convert::TryInto, panic};
 
 pub const ZLIB_HEADER: [u8; 2] = [0x78, 0x9C]; // https://stackoverflow.com/a/17176881/9438168
 pub const ZLIB_START: [u8; 6] = [0x00, 0x00, 0x01, 0x00, ZLIB_HEADER[0], ZLIB_HEADER[1]];
@@ -22,38 +22,20 @@ pub fn find_matching_buffer(
     sub_buffer: &Vec<u8>,
     start_at_index: usize,
 ) -> Option<usize> {
-    let mut matching_bytes = 0;
-    let mut index = 0;
-
-    let start_index = base_buffer.iter().position(|e| {
-        if index < start_at_index {
-            index += 1;
-            return false;
-        }
-
-        index += 1;
-
-        if sub_buffer[matching_bytes] == *e {
-            matching_bytes += 1;
-
-            if matching_bytes == sub_buffer.len() {
-                return true;
-            }
-        } else {
-            matching_bytes = 0;
-        }
-        return false;
-    });
+    let start_index = base_buffer
+        .windows(sub_buffer.len())
+        .skip(start_at_index)
+        .position(|e| &e == sub_buffer);
 
     if start_index.is_some() {
-        return Some(start_index.unwrap() + 1 - sub_buffer.len());
+        return Some(start_index.unwrap() + start_at_index);
     }
 
     None
 }
 
-pub fn find_zlib_buffer_indexes(buffer: &Vec<u8>) -> (usize, usize) {
-    let zlib_start_index = find_matching_buffer(buffer, &ZLIB_START.to_vec(), 0);
+pub fn find_zlib_buffer_indexes(buffer: &Vec<u8>, start_at_index: usize) -> Option<(usize, usize)> {
+    let zlib_start_index = find_matching_buffer(buffer, &ZLIB_START.to_vec(), start_at_index);
 
     if zlib_start_index.is_some() {
         let zlib_start_index = zlib_start_index.unwrap();
@@ -61,26 +43,78 @@ pub fn find_zlib_buffer_indexes(buffer: &Vec<u8>) -> (usize, usize) {
 
         if zlib_stop_index.is_some() {
             let zlib_stop_index = zlib_stop_index.unwrap();
-            return (zlib_start_index, zlib_stop_index);
+            return Some((zlib_start_index, zlib_stop_index));
         } else {
-            panic!("No bytes matching end of zlib stream!");
+            return None;
         }
     } else {
-        panic!("No bytes matching start of zlib stream!");
+        return None;
     }
 }
 
-pub fn extract_zlib_buffer_from_civ6_save(buffer: &Vec<u8>, output_buffer: &mut Vec<u8>) {
-    let (zlib_start_index, zlib_stop_index) = find_zlib_buffer_indexes(&buffer);
+fn find_map_start_index(data: &Vec<u8>) -> Option<usize> {
+    find_matching_buffer(&data, &START_MAP_BUFFER.to_vec(), 0)
+}
 
+fn extract_zlib_buffer_from_civ6_save(
+    buffer: &Vec<u8>,
+    output_buffer: &mut Vec<u8>,
+    start_at_index: usize,
+) -> Option<usize> {
+    let result = find_zlib_buffer_indexes(&buffer, start_at_index);
+
+    if result.is_none() {
+        return None;
+    }
+
+    let (zlib_start_index, zlib_stop_index) = result.unwrap();
     let zlib_buffer = Vec::from(&buffer[(zlib_start_index + 4)..(zlib_stop_index + 4)]);
     output_buffer.clear();
 
     for x in 0..(zlib_buffer.len() / 65540 + 1) {
+        // Remove some weird bits, then append them to output buffer
         let start_offset = x * 65540;
         let stop_offset = min(zlib_buffer.len(), start_offset + 65536);
         let zlib_chunk = &zlib_buffer[start_offset..stop_offset];
         output_buffer.extend_from_slice(zlib_chunk);
+    }
+
+    return Some(zlib_start_index + 1);
+}
+
+fn zlib_uncompress(compressed_data: &Vec<u8>, output_buffer: &mut Vec<u8>) {
+    let mut out = output_buffer;
+    let mut decompressor = Decompress::new(true);
+    while decompressor.total_in() < compressed_data.len() as u64 {
+        out.reserve((2usize).pow(16));
+        let result = decompressor.decompress_vec(compressed_data, &mut out, FlushDecompress::Sync);
+
+        if result.is_err() {
+            break;
+        }
+    }
+}
+
+pub fn extract_civ6_map_data(data: &Vec<u8>, uncompressed_data: &mut Vec<u8>) {
+    assert_eq!(&data[0..4], "CIV6".as_bytes());
+
+    let mut compressed_data = Vec::new();
+    let mut out = uncompressed_data;
+    let mut found_map = false;
+    let mut start_at_index = 0;
+
+    while !found_map {
+        let result =
+            extract_zlib_buffer_from_civ6_save(&data, &mut compressed_data, start_at_index);
+        if result.is_none() {
+            panic!("No zlib stream containing the map was found!");
+        }
+        start_at_index = result.unwrap();
+        out.clear();
+        zlib_uncompress(&compressed_data, &mut out);
+        if find_map_start_index(&out).is_some() {
+            found_map = true;
+        }
     }
 }
 
@@ -100,49 +134,9 @@ pub fn tiles_number_to_max_xy(max_tiles: usize) -> (usize, usize) {
     return (tiles_x_max, tiles_y_max);
 }
 
-pub fn extract_civ6_compressed_data(data: &Vec<u8>, output_buffer: &mut Vec<u8>) {
-    assert_eq!(&data[0..4], "CIV6".as_bytes());
-
-    let mut compressed_data = Vec::new();
-    extract_zlib_buffer_from_civ6_save(&data, &mut compressed_data);
-
-    let mut decompressor = Decompress::new(true);
-    let mut temp_decompressed_data: Vec<u8> = Vec::with_capacity((1024 as usize).pow(2)); // 1 mb is read each time
-    loop {
-        if decompressor.total_in() as usize == compressed_data.len() {
-            break;
-        }
-
-        let remaining_data = &compressed_data[(decompressor.total_in() as usize)..];
-        let result = decompressor.decompress_vec(
-            remaining_data,
-            &mut temp_decompressed_data,
-            FlushDecompress::Sync,
-        );
-
-        if result.is_ok() {
-            let status = result.unwrap();
-            match status {
-                Status::Ok => {
-                    output_buffer.append(&mut temp_decompressed_data);
-                }
-                Status::StreamEnd => {
-                    break;
-                }
-                Status::BufError => panic!("Error with buffer! Corrupted data?"),
-            }
-        } else {
-            panic!("{:?}", result);
-        }
-    }
-
-    output_buffer.append(&mut temp_decompressed_data);
-}
-
 pub fn map_render(uncompressed_data: &Vec<u8>) -> RgbImage {
     let tiles_map_start_index =
-        find_matching_buffer(&uncompressed_data, &START_MAP_BUFFER.to_vec(), 0)
-            .expect("Could not find a map in this file!");
+        find_map_start_index(&uncompressed_data).expect("Could not find a map in this file!");
     let tiles_number_buf =
         &uncompressed_data[(tiles_map_start_index + 12)..(tiles_map_start_index + 16)];
     let tiles_number =
@@ -182,8 +176,6 @@ pub fn map_render(uncompressed_data: &Vec<u8>) -> RgbImage {
 
         if lengthflag3 & 64 != 0 {
             let civ_index = tilebuf[buflength - 5];
-
-            println!("{}", civ_index);
 
             if civ_index == 7 {
                 pixel_color = Rgb([255, 0, 0]);
