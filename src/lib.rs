@@ -1,6 +1,7 @@
 use flate2::{Decompress, FlushDecompress};
 use image::{ImageBuffer, Rgb, RgbImage};
 use std::{cmp::min, convert::TryInto, panic};
+use twoway::{find_bytes, rfind_bytes};
 
 pub const ZLIB_HEADER: [u8; 2] = [0x78, 0x9C]; // https://stackoverflow.com/a/17176881/9438168
 pub const ZLIB_START: [u8; 6] = [0x00, 0x00, 0x01, 0x00, ZLIB_HEADER[0], ZLIB_HEADER[1]];
@@ -17,32 +18,15 @@ pub const MAP_SIZES: [(usize, (usize, usize)); 6] = [
     (6996, (106, 66)),
 ];
 
-pub fn find_matching_buffer(
-    base_buffer: &Vec<u8>,
-    sub_buffer: &Vec<u8>,
-    start_at_index: usize,
-) -> Option<usize> {
-    let start_index = base_buffer
-        .windows(sub_buffer.len())
-        .skip(start_at_index)
-        .position(|e| &e == sub_buffer);
-
-    if start_index.is_some() {
-        return Some(start_index.unwrap() + start_at_index);
-    }
-
-    None
-}
-
 pub fn find_zlib_buffer_indexes(buffer: &Vec<u8>, start_at_index: usize) -> Option<(usize, usize)> {
-    let zlib_start_index = find_matching_buffer(buffer, &ZLIB_START.to_vec(), start_at_index);
+    let zlib_start_found_index = find_bytes(&buffer[start_at_index..], &ZLIB_START.to_vec());
 
-    if zlib_start_index.is_some() {
-        let zlib_start_index = zlib_start_index.unwrap();
-        let zlib_stop_index = find_matching_buffer(buffer, &ZLIB_STOP.to_vec(), zlib_start_index);
+    if zlib_start_found_index.is_some() {
+        let zlib_start_index = zlib_start_found_index.unwrap() + start_at_index;
+        let zlib_stop_found_index = find_bytes(&buffer[zlib_start_index..], &ZLIB_STOP.to_vec());
 
-        if zlib_stop_index.is_some() {
-            let zlib_stop_index = zlib_stop_index.unwrap();
+        if zlib_stop_found_index.is_some() {
+            let zlib_stop_index = zlib_stop_found_index.unwrap() + zlib_start_index;
             return Some((zlib_start_index, zlib_stop_index));
         } else {
             return None;
@@ -53,19 +37,7 @@ pub fn find_zlib_buffer_indexes(buffer: &Vec<u8>, start_at_index: usize) -> Opti
 }
 
 fn find_map_start_index(data: &Vec<u8>) -> Option<usize> {
-    let mut header_index = find_matching_buffer(&data, &START_MAP_BUFFER.to_vec(), 0);
-    if header_index.is_none() {
-        return None;
-    }
-    let mut next_header_index =
-        find_matching_buffer(&data, &START_MAP_BUFFER.to_vec(), header_index.unwrap() + 1);
-
-    while next_header_index.is_some() {
-        header_index = next_header_index;
-        next_header_index =
-            find_matching_buffer(&data, &START_MAP_BUFFER.to_vec(), header_index.unwrap() + 1);
-    }
-    header_index
+    rfind_bytes(&data, &START_MAP_BUFFER.to_vec())
 }
 
 fn extract_zlib_buffer_from_civ6_save(
